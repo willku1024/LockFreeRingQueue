@@ -1,7 +1,7 @@
 #include <stdexcept>
 #include <atomic>
+#include <iostream>
 using namespace std;
-
 
 #define CAS(o, e, d) atomic_compare_exchange_weak(o, e, d)
 
@@ -19,34 +19,38 @@ using namespace std;
    2、只有一个频繁操作队列的生产者,但偶尔会有其它生产者向队列push数据
  */
 
-
-template<typename T>
-class LockFreeRingQueue {
-  public:
-
+template <typename T>
+class LockFreeRingQueue
+{
+public:
     explicit LockFreeRingQueue(unsigned int size);
     virtual ~LockFreeRingQueue() {}
 
     // 入队
-    bool enQueue(T& t);
+    bool enQueue(T &t);
+    bool enQueue(T &&t) = delete;
 
     // 出队
-    bool deQueue(T& t);
+    bool deQueue(T &t);
 
 #ifndef ISEMP
 
     // 队空
     bool isEmpty(void);
+
+    // 队列此时长度
+    uint32_t qSize();
 #endif // ifndef ISEMP
 
-  private:
-
+private:
     // 判断size是够为2的幂
-    inline bool isPowerOfTwo(uint32_t num) {
+    inline bool isPowerOfTwo(uint32_t num)
+    {
         return num != 0 && (num & (num - 1)) == 0;
     }
 
-    inline uint32_t ceilPowerOfTwo(uint32_t num) {
+    inline uint32_t ceilPowerOfTwo(uint32_t num)
+    {
         num |= (num >> 1);
         num |= (num >> 2);
         num |= (num >> 4);
@@ -55,17 +59,18 @@ class LockFreeRingQueue {
         return num - (num >> 1);
     }
 
-    inline uint32_t roundupPowerOfTwo(uint32_t num) {
-        return num > 4 ? ceilPowerOfTwo((num - 1) << 1) : 4;
+    inline uint32_t roundupPowerOfTwo(uint32_t num)
+    {
+        return ceilPowerOfTwo((num - 1) << 1);
     }
 
-    inline uint32_t indexOfQueue(uint32_t index) {
+    inline uint32_t indexOfQueue(uint32_t index)
+    {
         // 当size为2的幂时，index % size 可以转化为 index & (size – 1)，详见kfifo
         return index & (this->_size - 1);
     }
 
-  private:
-
+private:
     uint32_t _size;
     atomic_int32_t _length;
 
@@ -82,74 +87,89 @@ class LockFreeRingQueue {
     COUNTER _writeIndex;
     COUNTER _lastWriteIndex;
 
-    std::unique_ptr<T[]>_queue;
+    std::unique_ptr<T[]> _queue;
 };
 
-
-template<typename T>
+template <typename T>
 LockFreeRingQueue<T>::LockFreeRingQueue(unsigned int size) : _length(0),
-    _readIndex(0),
-    _writeIndex(0),
-    _lastWriteIndex(0) {
-    if (size <= 0) throw std::out_of_range("queue size is invalid");
+                                                             _readIndex(0),
+                                                             _writeIndex(0),
+                                                             _lastWriteIndex(0)
+{
+    if (size <= 0)
+        throw std::out_of_range("queue size is invalid");
+    else if (1 == size)
+        this->_size = 2;
+    else
+        this->_size = isPowerOfTwo(size) ? size : roundupPowerOfTwo(size);
 
-    this->_size = isPowerOfTwo(size) ? size : roundupPowerOfTwo(size);
-
+    cout << "size:" << this->_size << endl;
     // this->_queue = new T[sizeof(this->_size)];
     // std::unique_ptr<T[]> t()
     _queue = std::move(std::unique_ptr<T[]>(new T[this->_size]));
 }
 
-template<typename T>
-bool LockFreeRingQueue<T>::enQueue(T& data) {
+template <typename T>
+bool LockFreeRingQueue<T>::enQueue(T &data)
+{
     uint32_t currentReadIndex;
     uint32_t currentWriteIndex;
 
-
-    do {
+    do
+    {
         currentReadIndex = this->_readIndex;
         currentWriteIndex = this->_writeIndex;
 
         if (indexOfQueue(currentWriteIndex + 1) ==
-                indexOfQueue(currentReadIndex)) return false;
+            indexOfQueue(currentReadIndex))
+        {
+            cout << "false:" << data << endl;
+            return false;
+        }
+
     } while (!CAS(&this->_writeIndex,
                   &currentWriteIndex,
                   (currentWriteIndex + 1)));
 
-    this->_queue[currentWriteIndex] = data;
+    this->_queue[indexOfQueue(currentWriteIndex)] = data;
 
     while (!CAS(&this->_lastWriteIndex, &currentWriteIndex,
-                currentWriteIndex + 1)) {
+                currentWriteIndex + 1))
+    {
         // this is a good place to yield the thread in case there are more
         // software threads than hardware processors and you have more
         // than 1 producer thread
         // have a look at sched_yield (POSIX.1b)
         sched_yield();
     }
+    cout << "true:" << data << endl;
 
 #ifndef ISEMP
     atomic_fetch_add(&this->_length, 1);
 #endif // ifndef ISEMP
+
+    return true;
 }
 
-template<typename T>
-bool LockFreeRingQueue<T>::deQueue(T& data) {
+template <typename T>
+bool LockFreeRingQueue<T>::deQueue(T &data)
+{
     uint32_t currentReadIndex;
     uint32_t currentLastWriteIndex;
 
-
-    do {
+    do
+    {
         currentReadIndex = this->_readIndex;
         currentLastWriteIndex = this->_lastWriteIndex;
 
         if (indexOfQueue(currentLastWriteIndex) ==
-                indexOfQueue(currentReadIndex)) {
+            indexOfQueue(currentReadIndex))
+        {
             // the queue is empty or
             // a producer thread has allocate space in the queue but is
             // waiting to commit the data into it
-            return false;
+            break;
         }
-
 
         // retrieve the data from the queue
         data = this->_queue[indexOfQueue(currentReadIndex)];
@@ -157,7 +177,8 @@ bool LockFreeRingQueue<T>::deQueue(T& data) {
         // try to perfrom now the CAS operation on the read index. If we succeed
         // a_data already contains what m_readIndex pointed to before we
         // increased it
-        if (CAS(&this->_readIndex, &currentReadIndex, currentReadIndex + 1)) {
+        if (CAS(&this->_readIndex, &currentReadIndex, currentReadIndex + 1))
+        {
 #ifndef ISEMP
             atomic_fetch_sub(&this->_length, 1);
 #endif // ifndef ISEMP
@@ -169,10 +190,15 @@ bool LockFreeRingQueue<T>::deQueue(T& data) {
 }
 
 #ifndef ISEMP
-template<typename T>
-bool LockFreeRingQueue<T>::isEmpty() {
+template <typename T>
+bool LockFreeRingQueue<T>::isEmpty()
+{
     return 0 == this->_length;
 }
 
+template <typename T>
+uint32_t LockFreeRingQueue<T>::qSize()
+{
+    return this->_length;
+}
 #endif // ifndef ISEMP
-
