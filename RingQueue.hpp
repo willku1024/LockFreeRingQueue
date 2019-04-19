@@ -103,7 +103,7 @@ LockFreeRingQueue<T>::LockFreeRingQueue(unsigned int size) : _length(0),
     else
         this->_size = isPowerOfTwo(size) ? size : roundupPowerOfTwo(size);
 
-    cout << "size:" << this->_size << endl;
+
     // this->_queue = new T[sizeof(this->_size)];
     // std::unique_ptr<T[]> t()
     _queue = std::move(std::unique_ptr<T[]>(new T[this->_size]));
@@ -123,7 +123,7 @@ bool LockFreeRingQueue<T>::enQueue(T &data)
         if (indexOfQueue(currentWriteIndex + 1) ==
             indexOfQueue(currentReadIndex))
         {
-            cout << "false:" << data << endl;
+
             return false;
         }
 
@@ -142,7 +142,7 @@ bool LockFreeRingQueue<T>::enQueue(T &data)
         // have a look at sched_yield (POSIX.1b)
         sched_yield();
     }
-    cout << "true:" << data << endl;
+
 
 #ifndef ISEMP
     atomic_fetch_add(&this->_length, 1);
